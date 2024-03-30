@@ -1,5 +1,5 @@
 
-#include <Arduino.h>
+/*#include <Arduino.h>
 #include <utils.h>
 #include <uECC.h>
 #include <WiFi.h>
@@ -98,9 +98,10 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
         return;
     }
     // Check if a random number
-    /* Cryptography code would go here */
+
     // Send back the random number
     Serial.println("Sending random number back to drone");
+    debug(incomingMessage.data, 40);
     esp_now_send(peerInfo.peer_addr, (uint8_t *)&incomingMessage, sizeof(incomingMessage));
 }
 
@@ -163,4 +164,4 @@ void loop()
         // Send data
         esp_now_send(peerInfo.peer_addr, (uint8_t *)&keyPayload, sizeof(keyPayload));
     }
-}
+}*/
