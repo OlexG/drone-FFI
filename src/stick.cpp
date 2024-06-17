@@ -1,5 +1,5 @@
 
-#include <Arduino.h>
+/*#include <Arduino.h>
 #include <utils.h>
 #include <uECC.h>
 
@@ -8,7 +8,7 @@ void debug(byte *keyArray, int keySize)
     for (int i = 0; i < keySize; i++)
     {
         if (keyArray[i] < 16)
-        { // For proper formatting of values less than 16
+        { 
             Serial.print("0");
         }
         Serial.print(keyArray[i], HEX);
@@ -19,9 +19,6 @@ void debug(byte *keyArray, int keySize)
 
 static int RNG(uint8_t *dest, unsigned size)
 {
-    // Use the least-significant bits from the ADC for an unconnected pin (or connected to a source of
-    // random noise). This can take a long time to generate random data if the result of analogRead(0)
-    // doesn't change very frequently.
     while (size)
     {
         uint8_t val = 0;
@@ -47,7 +44,6 @@ static int RNG(uint8_t *dest, unsigned size)
         ++dest;
         --size;
     }
-    // NOTE: it would be a good idea to hash the resulting random data using SHA-256 or similar.
     return 1;
 }
 
@@ -65,9 +61,8 @@ void setup()
 
 void loop()
 {
-    // Print out keys
     Serial.println("Public key:");
     debug(publicKey, 40);
     Serial.println("Private key:");
     debug(privateKey, 21);
-}
+}*/
