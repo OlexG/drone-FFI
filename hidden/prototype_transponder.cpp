@@ -10,7 +10,11 @@ typedef struct struct_message {
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 bool IS_ON = false;
-
+bool lightOn = false;
+int ID_TIMER = 20;
+int lastRecievedOnMessage = 0;
+int RESET_TIMER = 100;
+int currentTick = 0;
 
 void play_tone(int tonePin, int frequency, int duration)
 {
@@ -60,12 +64,16 @@ void send_confirm_msg() {
 }
 
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-    // Serial.println("Message received");
-    // debug(incomingData, 40);
+    Serial.println("Message received");
+    debug(incomingData, 40);
     if (incomingData[0] == 0x00) { // The interrogator is asking for the light to be turned on
         // Turn light on
         IS_ON = true;
         send_confirm_msg();
+        lastRecievedOnMessage = currentTick;
+    } else if (incomingData[0] == 0x01) { // The interrogator is asking for the light to be maintained
+        IS_ON = true;
+        lastRecievedOnMessage = currentTick;
     } else { // The interrogator is asking for the light to be turned off
         IS_ON = false;
     }
@@ -73,12 +81,12 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 
 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    //Serial.print("Send Status: ");
-    //Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+    // Serial.print("Send Status: ");
+    // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }
 
 void setup() {
-    // Serial.begin(9600);
+    Serial.begin(9600);
     WiFi.mode(WIFI_STA); 
 
     // Initialize the pin as an output
@@ -104,12 +112,10 @@ void setup() {
     esp_now_add_peer(&peerInfo);
 }
 
-bool lightOn = false;
 void loop() {
     delay(20);
     int ledPin = TRANSISTOR_BASE_PIN;
     if (IS_ON) {
-        // flickerLED(2, TRANSISTOR_BASE_PIN, 20, false);
         if (!lightOn) {
             digitalWrite(ledPin, HIGH);
             lightOn = true;
@@ -117,9 +123,25 @@ void loop() {
             digitalWrite(ledPin, LOW);
             lightOn = false;
         }
+        Serial.print("on\n");
     } else if (lightOn) {
         digitalWrite(ledPin, LOW);
         lightOn = false;
     }
-    send_id_msg();
+
+    if (!IS_ON) {
+        Serial.print("off\n");
+    }
+
+    if (currentTick - lastRecievedOnMessage > RESET_TIMER) {
+        IS_ON = false;
+        lightOn = false;
+        digitalWrite(ledPin, LOW);
+    }
+
+
+    if (currentTick % ID_TIMER == 0) {
+        send_id_msg();
+    }
+    currentTick++;
 }
