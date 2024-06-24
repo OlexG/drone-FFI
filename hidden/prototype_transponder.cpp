@@ -12,9 +12,11 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 bool IS_ON = false;
 bool lightOn = false;
 int ID_TIMER = 20;
-int lastRecievedOnMessage = 0;
+int lastRecievedOnMessage = -1000;
 int RESET_TIMER = 100;
+int FLASH_RATE = 3;
 int currentTick = 0;
+TaskHandle_t inf_loop_task;
 
 void play_tone(int tonePin, int frequency, int duration)
 {
@@ -64,17 +66,17 @@ void send_confirm_msg() {
 }
 
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-    Serial.println("Message received");
-    debug(incomingData, 40);
-    if (incomingData[0] == 0x00) { // The interrogator is asking for the light to be turned on
+    // Serial.println("Message received");
+    // debug(incomingData, 40);
+    if (incomingData[0] == 0x1c) { // The interrogator is asking for the light to be turned on
         // Turn light on
         IS_ON = true;
         send_confirm_msg();
         lastRecievedOnMessage = currentTick;
-    } else if (incomingData[0] == 0x01) { // The interrogator is asking for the light to be maintained
+    } else if (incomingData[0] == 0x2c) { // The interrogator is asking for the light to be maintained
         IS_ON = true;
         lastRecievedOnMessage = currentTick;
-    } else { // The interrogator is asking for the light to be turned off
+    } else if (incomingData[0] == 0x3c) { // The interrogator is asking for the light to be turned off
         IS_ON = false;
     }
 }
@@ -83,6 +85,44 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
     // Serial.print("Send Status: ");
     // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+}
+
+void inf_loop( void * pvParameters ) {
+    for(;;) {
+        delay(20);
+        int ledPin = TRANSISTOR_BASE_PIN;
+        if (IS_ON) {
+            if (!lightOn && currentTick % FLASH_RATE == 0) {
+                digitalWrite(ledPin, HIGH);
+                lightOn = true;
+            } else {
+                digitalWrite(ledPin, LOW);
+                lightOn = false;
+            }
+        } else if (lightOn) {
+            digitalWrite(ledPin, LOW);
+            lightOn = false;
+        }
+    }
+}
+
+void loop() {
+    delay(20);
+    int ledPin = TRANSISTOR_BASE_PIN;
+    if (currentTick - lastRecievedOnMessage > RESET_TIMER) {
+        IS_ON = false;
+        lightOn = false;
+        digitalWrite(ledPin, LOW);
+    }
+
+
+    if (currentTick % ID_TIMER == 0) {
+        send_id_msg();
+    }
+    currentTick++;
+    if (currentTick > 2147483640) {
+        currentTick = 0;
+    }
 }
 
 void setup() {
@@ -110,38 +150,13 @@ void setup() {
     peerInfo.channel = 0;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
+    xTaskCreatePinnedToCore(
+                    inf_loop,   /* Task function. */
+                    "inf_loop",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &inf_loop_task,      /* Task handle to keep track of created task */
+                    1);
 }
 
-void loop() {
-    delay(20);
-    int ledPin = TRANSISTOR_BASE_PIN;
-    if (IS_ON) {
-        if (!lightOn) {
-            digitalWrite(ledPin, HIGH);
-            lightOn = true;
-        } else {
-            digitalWrite(ledPin, LOW);
-            lightOn = false;
-        }
-        Serial.print("on\n");
-    } else if (lightOn) {
-        digitalWrite(ledPin, LOW);
-        lightOn = false;
-    }
-
-    if (!IS_ON) {
-        Serial.print("off\n");
-    }
-
-    if (currentTick - lastRecievedOnMessage > RESET_TIMER) {
-        IS_ON = false;
-        lightOn = false;
-        digitalWrite(ledPin, LOW);
-    }
-
-
-    if (currentTick % ID_TIMER == 0) {
-        send_id_msg();
-    }
-    currentTick++;
-}

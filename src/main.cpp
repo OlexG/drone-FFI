@@ -2,30 +2,22 @@
 #include <WiFi.h>
 #include <Arduino.h>
 
-#define BUZZER_PIN 12
-
-#define LED1_PIN 33 // green
-#define LED2_PIN 32 // red
-
-#define BUTTON_PIN 14
+#define TRANSISTOR_BASE_PIN 25
 
 typedef struct struct_message {
     uint8_t data[40];  
 } struct_message;
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-bool IS_PRESSED = false;
-bool IS_CONNECTED = false;
-bool IS_CONNTECTED_CONFIRMATION_LIGHT_ON = false;
-// Every 100 ticks, we will "reset" everything
-// This solves most issues with "multiple" devices I think
+bool IS_ON = false;
+bool lightOn = false;
+int ID_TIMER = 20;
+int lastRecievedOnMessage = -1000;
 int RESET_TIMER = 100;
-int lastRecievedIdMessage = 0;
-int ON_MESSAGE_TIMER = 20;
-
+int FLASH_RATE = 3;
 int currentTick = 0;
+TaskHandle_t inf_loop_task;
 
-/* UTIL FUNCTIONS */
 void play_tone(int tonePin, int frequency, int duration)
 {
     tone(tonePin, frequency, duration);
@@ -60,62 +52,94 @@ void debug(const uint8_t *keyArray, int keySize) {
     Serial.println();
 }
 
-/* END OF UTIL FUNCTIONS */
+void send_id_msg() {
+    struct_message responseMessage;
+    memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
+    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
+}
+
+void send_confirm_msg() {
+    struct_message responseMessage;
+    memset(responseMessage.data, 1, sizeof(responseMessage.data)); 
+    responseMessage.data[0] = 0x01;
+    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
+}
+
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-    // Serial.println("Message received, means the transponder is close");
-    if (incomingData[0] == 0x01) { // If the transponder sends us a confirmation message of the light being on
-        play_sound(BUZZER_PIN);
-    } else { // If the transponder sends us a message of just being "connected"
-        // flickerLED(2, LED1_PIN, 100, false);
-        IS_CONNECTED = true;
-        lastRecievedIdMessage = currentTick;
+    // Serial.println("Message received");
+    // debug(incomingData, 40);
+    if (incomingData[0] == 0x1c) { // The interrogator is asking for the light to be turned on
+        // Turn light on
+        IS_ON = true;
+        send_confirm_msg();
+        lastRecievedOnMessage = currentTick;
+    } else if (incomingData[0] == 0x2c) { // The interrogator is asking for the light to be maintained
+        IS_ON = true;
+        lastRecievedOnMessage = currentTick;
+    } else if (incomingData[0] == 0x3c) { // The interrogator is asking for the light to be turned off
+        IS_ON = false;
     }
 }
 
 
-// Message for turning on the light
-void send_on_msg(){
-    struct_message responseMessage;
-    memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
-}
-
-// Message for keeping the light going
-void send_maintain_msg(){
-    struct_message responseMessage;
-    memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
-    responseMessage.data[0] = 0x01; // This represents keeping the light going
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
-}
-
-// Message for turning off the light
-void send_off_msg(){
-    struct_message responseMessage;
-    memset(responseMessage.data, 1, sizeof(responseMessage.data)); 
-    responseMessage.data[0] = 0x02; // This represents the off message
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
-}
-
-
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    Serial.print("Send Status: ");
-    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+    // Serial.print("Send Status: ");
+    // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+}
+
+void inf_loop( void * pvParameters ) {
+    for(;;) {
+        delay(20);
+        int ledPin = TRANSISTOR_BASE_PIN;
+        if (IS_ON) {
+            if (!lightOn && currentTick % FLASH_RATE == 0) {
+                digitalWrite(ledPin, HIGH);
+                lightOn = true;
+            } else {
+                digitalWrite(ledPin, LOW);
+                lightOn = false;
+            }
+        } else if (lightOn) {
+            digitalWrite(ledPin, LOW);
+            lightOn = false;
+        }
+    }
+}
+
+void loop() {
+    delay(20);
+    int ledPin = TRANSISTOR_BASE_PIN;
+    if (currentTick - lastRecievedOnMessage > RESET_TIMER) {
+        IS_ON = false;
+        lightOn = false;
+        digitalWrite(ledPin, LOW);
+    }
+
+
+    if (currentTick % ID_TIMER == 0) {
+        send_id_msg();
+    }
+    currentTick++;
+    if (currentTick > 2147483640) {
+        currentTick = 0;
+    }
 }
 
 void setup() {
     Serial.begin(9600);
     WiFi.mode(WIFI_STA); 
 
-    pinMode(LED1_PIN, OUTPUT); // green light    
-    pinMode(LED2_PIN, OUTPUT); // red light
-    
-    pinMode(BUTTON_PIN, INPUT_PULLUP); // button
+    // Initialize the pin as an output
+    pinMode(TRANSISTOR_BASE_PIN, OUTPUT);
+
+    // Initially set the pin to low (off)
+    digitalWrite(TRANSISTOR_BASE_PIN, LOW);
 
     if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
+        //Serial.println("Error initializing ESP-NOW");
         return;
     }
-    flickerLED(8, LED2_PIN, 100, true);
+ 
 
     esp_now_register_send_cb(OnDataSent);
     esp_now_register_recv_cb(onDataRecv);
@@ -126,41 +150,13 @@ void setup() {
     peerInfo.channel = 0;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
+    xTaskCreatePinnedToCore(
+                    inf_loop,   /* Task function. */
+                    "inf_loop",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &inf_loop_task,      /* Task handle to keep track of created task */
+                    1);
 }
 
-
-void loop() {
-    int buttonState = digitalRead(BUTTON_PIN);
-    delay(20);
-    /* Button logic, turn the light on when clicked and every other x ticks*/
-    if(buttonState == LOW && !IS_PRESSED) {
-        Serial.print("Turning on the light\n");
-        send_on_msg();
-        IS_PRESSED = true;
-    }
-    if (buttonState == LOW && currentTick % ON_MESSAGE_TIMER == 0) {
-        Serial.print("Keeping the light going\n");
-        send_maintain_msg();
-        IS_PRESSED = true;
-    }
-
-
-    if (buttonState != LOW && IS_PRESSED) {
-        Serial.print("Turning off the light\n");
-        send_off_msg();
-        IS_PRESSED = false;
-    }
-
-
-    /* Connection logic */
-    if (currentTick - lastRecievedIdMessage > RESET_TIMER) {
-        IS_CONNTECTED_CONFIRMATION_LIGHT_ON = false;
-        IS_CONNECTED = false;
-        digitalWrite(LED1_PIN, LOW);
-    }
-    if (IS_CONNECTED && !IS_CONNTECTED_CONFIRMATION_LIGHT_ON) {
-        digitalWrite(LED1_PIN, HIGH);
-        IS_CONNTECTED_CONFIRMATION_LIGHT_ON = true;
-    }
-    currentTick++;
-}

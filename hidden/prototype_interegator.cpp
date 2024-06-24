@@ -1,7 +1,10 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <Arduino.h>
-
+/*
+Changes
+Should accept "confirmation" only within a certain time period
+*/
 #define BUZZER_PIN 12
 
 #define LED1_PIN 33 // green
@@ -20,7 +23,9 @@ bool IS_CONNTECTED_CONFIRMATION_LIGHT_ON = false;
 // Every 100 ticks, we will "reset" everything
 // This solves most issues with "multiple" devices I think
 int RESET_TIMER = 100;
-int lastRecievedIdMessage = 0;
+int lastRecievedIdMessage = -100;
+int lastRecievedConfirmationMessage = -1000;
+int CONFIRMATION_TIMER = 100;
 int ON_MESSAGE_TIMER = 20;
 
 int currentTick = 0;
@@ -64,7 +69,11 @@ void debug(const uint8_t *keyArray, int keySize) {
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     // Serial.println("Message received, means the transponder is close");
     if (incomingData[0] == 0x01) { // If the transponder sends us a confirmation message of the light being on
-        play_sound(BUZZER_PIN);
+        if (currentTick - lastRecievedConfirmationMessage > CONFIRMATION_TIMER) {
+            lastRecievedConfirmationMessage = currentTick;
+            // flickerLED(2, LED1_PIN, 100, false);
+            play_sound(BUZZER_PIN);
+        }
     } else { // If the transponder sends us a message of just being "connected"
         // flickerLED(2, LED1_PIN, 100, false);
         IS_CONNECTED = true;
@@ -77,6 +86,7 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 void send_on_msg(){
     struct_message responseMessage;
     memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
+    responseMessage.data[0] = 0x1c; // This represents keeping the light on
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
 
@@ -84,7 +94,7 @@ void send_on_msg(){
 void send_maintain_msg(){
     struct_message responseMessage;
     memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
-    responseMessage.data[0] = 0x01; // This represents keeping the light going
+    responseMessage.data[0] = 0x2c; // This represents keeping the light going
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
 
@@ -92,7 +102,7 @@ void send_maintain_msg(){
 void send_off_msg(){
     struct_message responseMessage;
     memset(responseMessage.data, 1, sizeof(responseMessage.data)); 
-    responseMessage.data[0] = 0x02; // This represents the off message
+    responseMessage.data[0] = 0x3c; // This represents the off message
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
 
