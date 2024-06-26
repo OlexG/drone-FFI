@@ -1,21 +1,20 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <Arduino.h>
-/*
-Changes
-Should accept "confirmation" only within a certain time period
-*/
-#define BUZZER_PIN 12
+#include "crypto/ed25519.h"
+#include <Preferences.h>
 
+#define BUZZER_PIN 12
 #define LED1_PIN 33 // green
 #define LED2_PIN 32 // red
-
 #define BUTTON_PIN 14
 
-typedef struct struct_message {
-    uint8_t data[40];  
-} struct_message;
+#define EEPROM_SIZE 100
 
+typedef struct struct_message {
+    uint8_t data[80];  
+} struct_message;
+Preferences preferences;
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 bool IS_PRESSED = false;
 bool IS_CONNECTED = false;
@@ -27,18 +26,49 @@ int lastRecievedIdMessage = -100;
 int lastRecievedConfirmationMessage = -1000;
 int CONFIRMATION_TIMER = 100;
 int ON_MESSAGE_TIMER = 20;
+int SERIAL_TIMER = 500;
+const char* public_key_str = "4266f2f64bd0cf1b054005f8726ba4ae3f8a38eef8eea1ea1ca7d1c775cbf184";
+const char* signature_str = "e637ccdcc9a7fda13ff422567447c259ae6eee618648591a960ce2e2296e33eba21871e93d85b28ae289bd97b60dd729d493915be808a3517faa6226e2ec230b";
+const char* timestamp_str = "de117b66";
+unsigned char public_key[32];
+unsigned char signature[64];
+unsigned char timestamp[4];
+unsigned char recieved_public_key[32];
+unsigned char recieved_signature[64];
+unsigned char recieved_timestamp[4];
 
 int currentTick = 0;
 
 /* UTIL FUNCTIONS */
-void play_tone(int tonePin, int frequency, int duration)
-{
+void writeStoredValues(unsigned char *public_key, unsigned char *timestamp, unsigned char *signature) {
+    preferences.putBytes("public_key", public_key, 32);
+    preferences.putBytes("timestamp", timestamp, 4);
+    preferences.putBytes("signature", signature, 64);
+}
+
+void readStoredValues() {
+    preferences.getBytes("public_key", public_key, 32);
+    preferences.getBytes("timestamp", timestamp, 4);
+    preferences.getBytes("signature", signature, 64);
+}
+
+bool verify_timestamp(const unsigned char *n_signature, const unsigned char *n_timestamp, const unsigned char *public_key) {
+    int result = ed25519_verify(n_signature, n_timestamp, 4, public_key);
+    return result;
+}
+
+void hexStringToByteArray(const char* hexString, unsigned char* byteArray, size_t byteArraySize) {
+    for (size_t i = 0; i < byteArraySize; i++) {
+        sscanf(hexString + 2*i, "%2hhx", &byteArray[i]);
+    }
+}
+
+void play_tone(int tonePin, int frequency, int duration) {
     tone(tonePin, frequency, duration);
     delay(duration + 50);
 }
 
-void play_sound(const uint8_t pin)
-{
+void play_sound(const uint8_t pin) {
     play_tone(pin, 500, 200);
     play_tone(pin, 1000, 200);
     play_tone(pin, 1500, 200);
@@ -68,6 +98,15 @@ void debug(const uint8_t *keyArray, int keySize) {
 /* END OF UTIL FUNCTIONS */
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     // Serial.println("Message received, means the transponder is close");
+    // Bits 2 - 64 are the signature
+    // Bits 65 - 69 are the timestamp
+    memcpy(recieved_signature, incomingData + 1, 64);
+    memcpy(recieved_timestamp, incomingData + 65, 4);
+    if (!verify_timestamp(recieved_signature, recieved_timestamp, public_key)) {
+        Serial.println("Timestamp not verified");
+        return;
+    }
+
     if (incomingData[0] == 0x01) { // If the transponder sends us a confirmation message of the light being on
         if (currentTick - lastRecievedConfirmationMessage > CONFIRMATION_TIMER) {
             lastRecievedConfirmationMessage = currentTick;
@@ -81,31 +120,35 @@ void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     }
 }
 
-
 // Message for turning on the light
-void send_on_msg(){
+void send_on_msg() {
     struct_message responseMessage;
     memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
     responseMessage.data[0] = 0x1c; // This represents keeping the light on
+    // Include public key in the bits 2nd - 33rd
+    memcpy(responseMessage.data + 1, public_key, 32);
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
 
 // Message for keeping the light going
-void send_maintain_msg(){
+void send_maintain_msg() {
     struct_message responseMessage;
     memset(responseMessage.data, 0, sizeof(responseMessage.data)); 
     responseMessage.data[0] = 0x2c; // This represents keeping the light going
+    // Include public key in the bits 2nd - 33rd
+    memcpy(responseMessage.data + 1, public_key, 32);
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
 
 // Message for turning off the light
-void send_off_msg(){
+void send_off_msg() {
     struct_message responseMessage;
     memset(responseMessage.data, 1, sizeof(responseMessage.data)); 
     responseMessage.data[0] = 0x3c; // This represents the off message
+    // Include public key in the bits 2nd - 33rd
+    memcpy(responseMessage.data + 1, public_key, 32);
     esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
 }
-
 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
     Serial.print("Send Status: ");
@@ -113,18 +156,39 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 
 void setup() {
+    hexStringToByteArray(public_key_str, public_key, 32);
+    hexStringToByteArray(signature_str, signature, 64);
+    hexStringToByteArray(timestamp_str, timestamp, 4);
+
     Serial.begin(9600);
+
     WiFi.mode(WIFI_STA); 
 
     pinMode(LED1_PIN, OUTPUT); // green light    
     pinMode(LED2_PIN, OUTPUT); // red light
-    
     pinMode(BUTTON_PIN, INPUT_PULLUP); // button
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("Error initializing ESP-NOW");
         return;
     }
+
+    // Initialize Preferences
+    preferences.begin("storage", false);
+
+    // Read stored values from Preferences
+    // For now we don't read this needs to be changed later
+    // There is a bug with memory not persisting
+    // readStoredValues();
+
+    // Debugging read values
+    /*Serial.println("Public key:");
+    debug(public_key, 32);
+    Serial.println("Timestamp:");
+    debug(timestamp, 4);
+    Serial.println("Signature:");
+    debug(signature, 64);*/
+
     flickerLED(8, LED2_PIN, 100, true);
 
     esp_now_register_send_cb(OnDataSent);
@@ -138,29 +202,54 @@ void setup() {
     esp_now_add_peer(&peerInfo);
 }
 
-
 void loop() {
     int buttonState = digitalRead(BUTTON_PIN);
     delay(20);
-    /* Button logic, turn the light on when clicked and every other x ticks*/
+
+    /* Button logic, turn the light on when clicked and every other x ticks */
     if(buttonState == LOW && !IS_PRESSED) {
-        Serial.print("Turning on the light\n");
+        Serial.println("Turning on the light");
         send_on_msg();
         IS_PRESSED = true;
     }
     if (buttonState == LOW && currentTick % ON_MESSAGE_TIMER == 0) {
-        Serial.print("Keeping the light going\n");
+        Serial.println("Keeping the light going");
         send_maintain_msg();
         IS_PRESSED = true;
     }
 
-
     if (buttonState != LOW && IS_PRESSED) {
-        Serial.print("Turning off the light\n");
+        Serial.println("Turning off the light");
         send_off_msg();
         IS_PRESSED = false;
     }
 
+    if (currentTick % SERIAL_TIMER == 0 && Serial.available() >= 100) {
+        uint8_t buffer[100];
+        // Read 100 bytes from the serial port
+        int bytesRead = Serial.readBytes(buffer, 100);
+        if (bytesRead < 100) {
+            return;
+        }
+        uint8_t recieved_public_key[32];
+        uint8_t recieved_timestamp[4];
+        uint8_t recieved_signature[64];
+        memcpy(recieved_public_key, buffer, 32);
+        memcpy(recieved_timestamp, buffer + 32, 4);
+        memcpy(recieved_signature, buffer + 36, 64);
+        writeStoredValues(recieved_public_key, recieved_timestamp, recieved_signature);
+        // Write back the buffer to the serial port
+        Serial.write(buffer, bytesRead);
+    }
+
+    /*if (currentTick % 1000 == 0) {
+        Serial.println("Stored values");
+        debug(public_key, 32);
+        Serial.println("Timestamp:");
+        debug(timestamp, 4);
+        Serial.println("Signature:");
+        debug(signature, 64);
+    }*/
 
     /* Connection logic */
     if (currentTick - lastRecievedIdMessage > RESET_TIMER) {
