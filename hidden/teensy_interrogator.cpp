@@ -1,21 +1,29 @@
-#include <esp_now.h>
-#include <WiFi.h>
 #include <Arduino.h>
 #include "crypto/ed25519.h"
-#include <Preferences.h>
+#include <SPI.h>
+#include <RH_RF95.h>
 
+// Define pins for LoRa module
+#define RFM95_CS 10
+#define RFM95_RST 9
+#define RFM95_INT 2
+
+// Define frequency
+#define RF95_FREQ 915.0
 #define BUZZER_PIN 12
 #define LED1_PIN 33 // green
 #define LED2_PIN 32 // red
 #define BUTTON_PIN 14
 
-#define EEPROM_SIZE 100
+
+// Create an instance of the radio driver
+RH_RF95 rf95(RFM95_CS, RFM95_INT);
 
 typedef struct struct_message {
     uint8_t data[80];  
 } struct_message;
-Preferences preferences;
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+
 bool IS_PRESSED = false;
 bool IS_CONNECTED = false;
 bool IS_CONNTECTED_CONFIRMATION_LIGHT_ON = false;
@@ -40,17 +48,6 @@ unsigned char recieved_timestamp[4];
 int currentTick = 0;
 
 /* UTIL FUNCTIONS */
-void writeStoredValues(unsigned char *public_key, unsigned char *timestamp, unsigned char *signature) {
-    preferences.putBytes("public_key", public_key, 32);
-    preferences.putBytes("timestamp", timestamp, 4);
-    preferences.putBytes("signature", signature, 64);
-}
-
-void readStoredValues() {
-    preferences.getBytes("public_key", public_key, 32);
-    preferences.getBytes("timestamp", timestamp, 4);
-    preferences.getBytes("signature", signature, 64);
-}
 
 bool verify_timestamp(const unsigned char *n_signature, const unsigned char *n_timestamp, const unsigned char *public_key) {
     int result = ed25519_verify(n_signature, n_timestamp, 4, public_key);
@@ -96,7 +93,7 @@ void debug(const uint8_t *keyArray, int keySize) {
 }
 
 /* END OF UTIL FUNCTIONS */
-void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+void on_data_recieve(uint8_t *incomingData) {
     // Serial.println("Message received, means the transponder is close");
     // Bits 2 - 64 are the signature
     // Bits 65 - 69 are the timestamp
@@ -127,7 +124,7 @@ void send_on_msg() {
     responseMessage.data[0] = 0x1c; // This represents keeping the light on
     // Include public key in the bits 2nd - 33rd
     memcpy(responseMessage.data + 1, public_key, 32);
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
+    rf95.send(responseMessage.data, sizeof(responseMessage.data));
 }
 
 // Message for keeping the light going
@@ -137,7 +134,7 @@ void send_maintain_msg() {
     responseMessage.data[0] = 0x2c; // This represents keeping the light going
     // Include public key in the bits 2nd - 33rd
     memcpy(responseMessage.data + 1, public_key, 32);
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
+    rf95.send(responseMessage.data, sizeof(responseMessage.data));
 }
 
 // Message for turning off the light
@@ -147,13 +144,9 @@ void send_off_msg() {
     responseMessage.data[0] = 0x3c; // This represents the off message
     // Include public key in the bits 2nd - 33rd
     memcpy(responseMessage.data + 1, public_key, 32);
-    esp_now_send(broadcastAddress, (uint8_t *)&responseMessage, sizeof(responseMessage));
+    rf95.send(responseMessage.data, sizeof(responseMessage.data));
 }
 
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    Serial.print("Send Status: ");
-    Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
-}
 
 void setup() {
     hexStringToByteArray(public_key_str, public_key, 32);
@@ -161,45 +154,40 @@ void setup() {
     hexStringToByteArray(timestamp_str, timestamp, 4);
 
     Serial.begin(9600);
+    while (!Serial) {
+        ;
+    }
 
-    WiFi.mode(WIFI_STA); 
+    Serial.println("RFM95 LoRa Interrogator");
+
+    // Initialize LoRa module pins
+    pinMode(RFM95_RST, OUTPUT);
+    digitalWrite(RFM95_RST, HIGH);
+    delay(10);
+    digitalWrite(RFM95_RST, LOW);
+    delay(10);
+    digitalWrite(RFM95_RST, HIGH);
+    delay(10);
+
+    // Initialize the radio
+    if (!rf95.init()) {
+        Serial.println("LoRa init failed. Check your connections.");
+        while (1);
+    }
+    Serial.println("LoRa init succeeded.");
+
+    // Set the frequency
+    if (!rf95.setFrequency(RF95_FREQ)) {
+    Serial.println("setFrequency failed");
+    while (1);
+    }
+    Serial.print("Set Freq to: "); Serial.println(RF95_FREQ);
 
     pinMode(LED1_PIN, OUTPUT); // green light    
     pinMode(LED2_PIN, OUTPUT); // red light
     pinMode(BUTTON_PIN, INPUT_PULLUP); // button
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        return;
-    }
-
-    // Initialize Preferences
-    preferences.begin("storage", false);
-
-    // Read stored values from Preferences
-    // For now we don't read this needs to be changed later
-    // There is a bug with memory not persisting
-    // readStoredValues();
-
-    // Debugging read values
-    /*Serial.println("Public key:");
-    debug(public_key, 32);
-    Serial.println("Timestamp:");
-    debug(timestamp, 4);
-    Serial.println("Signature:");
-    debug(signature, 64);*/
-
     flickerLED(8, LED2_PIN, 100, true);
-
-    esp_now_register_send_cb(OnDataSent);
-    esp_now_register_recv_cb(onDataRecv);
-
-    esp_now_peer_info_t peerInfo;
-    memset(&peerInfo, 0, sizeof(peerInfo));
-    memcpy(peerInfo.peer_addr, broadcastAddress, 6);  
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo);
 }
 
 void loop() {
@@ -237,19 +225,9 @@ void loop() {
         memcpy(recieved_public_key, buffer, 32);
         memcpy(recieved_timestamp, buffer + 32, 4);
         memcpy(recieved_signature, buffer + 36, 64);
-        writeStoredValues(recieved_public_key, recieved_timestamp, recieved_signature);
         // Write back the buffer to the serial port
         Serial.write(buffer, bytesRead);
     }
-
-    /*if (currentTick % 1000 == 0) {
-        Serial.println("Stored values");
-        debug(public_key, 32);
-        Serial.println("Timestamp:");
-        debug(timestamp, 4);
-        Serial.println("Signature:");
-        debug(signature, 64);
-    }*/
 
     /* Connection logic */
     if (currentTick - lastRecievedIdMessage > RESET_TIMER) {
@@ -260,6 +238,16 @@ void loop() {
     if (IS_CONNECTED && !IS_CONNTECTED_CONFIRMATION_LIGHT_ON) {
         digitalWrite(LED1_PIN, HIGH);
         IS_CONNTECTED_CONFIRMATION_LIGHT_ON = true;
+    }
+
+    if (rf95.available()) {
+        // Receive the message
+        uint8_t buf[80];
+        uint8_t len = sizeof(buf);
+
+        if (rf95.recv(buf, &len)) {
+            on_data_recieve(buf);
+        }
     }
     currentTick++;
 }

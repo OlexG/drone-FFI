@@ -14,6 +14,7 @@
 typedef struct struct_message {
     uint8_t data[80];  
 } struct_message;
+
 Preferences preferences;
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 bool IS_PRESSED = false;
